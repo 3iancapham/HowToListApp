@@ -4,7 +4,70 @@ const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
 });
 
-export const sendMessage = async (question) => {
+export interface Task {
+  id: string;
+  text: string;
+  subtasks: Subtask[];
+  media?: string;
+}
+
+export interface Subtask {
+  id: string;
+  text: string;
+  completed: boolean;
+}
+
+function parseAIResponse(response: string): Task[] {
+  const tasks: Task[] = [];
+  const cleanResponse = response.replace(/<answer>|<\/answer>/g, '').trim();
+  const lines = cleanResponse.split('\n');
+  let currentTask: Task | null = null;
+
+  console.log('Parsing AI response:', cleanResponse);
+
+  for (const line of lines) {
+    const trimmedLine = line.trim();
+    console.log('Processing line:', trimmedLine);
+
+    if (trimmedLine.startsWith('Task')) {
+      if (currentTask) {
+        tasks.push(currentTask);
+      }
+      currentTask = {
+        id: Date.now().toString() + Math.random(),
+        text: trimmedLine,
+        subtasks: []
+      };
+      console.log('New task created:', currentTask);
+    } else if (currentTask) {
+      const match = trimmedLine.match(/^(\d+)\.\s(.+)/);
+      if (match) {
+        const [, numberStr, subtaskText] = match;
+        const number = parseInt(numberStr, 10);
+        if (!isNaN(number)) {
+          currentTask.subtasks.push({
+            id: Date.now().toString() + Math.random(),
+            text: subtaskText,
+            completed: false
+          });
+          console.log('Subtask added:', subtaskText);
+        }
+      } else if (trimmedLine.startsWith('[Image:') || trimmedLine.startsWith('[Video:')) {
+        currentTask.media = trimmedLine;
+        console.log('Media added:', trimmedLine);
+      }
+    }
+  }
+
+  if (currentTask) {
+    tasks.push(currentTask);
+  }
+
+  console.log('Parsed tasks:', JSON.stringify(tasks, null, 2));
+  return tasks;
+}
+
+export const sendMessage = async (question: string): Promise<Task[]> => {
   try {
     const msg = await anthropic.messages.create({
       model: "claude-3-5-sonnet-20240620",
@@ -61,7 +124,19 @@ Remember to tailor your response to the specific question asked by the user, pro
       ]
     });
 
-    return msg.content[0].text;
+    const content = msg.content[0];
+    if ('text' in content) {
+      const tasks = parseAIResponse(content.text);
+      console.log('Parsed tasks in sendMessage:', JSON.stringify(tasks, null, 2));
+      if (tasks.length > 0) {
+        return tasks;
+      } else {
+        console.log('No tasks parsed from AI response');
+        return [];
+      }
+    } else {
+      throw new Error('Unexpected content type in API response');
+    }
   } catch (error) {
     console.error('Error calling Anthropic API:', error);
     throw error;

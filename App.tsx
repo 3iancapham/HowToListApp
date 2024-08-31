@@ -1,11 +1,4 @@
-/**
- * Sample React Native App from Claude AI using the To Do List Artifact
- *
- * @format
- */
-
-import 'react-native-gesture-handler';
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { NavigationContainer } from '@react-navigation/native';
 import { createStackNavigator } from '@react-navigation/stack';
 import {
@@ -20,13 +13,11 @@ import {
   Platform,
   Alert,
 } from 'react-native';
-import axios from 'axios'; // You'll need to install this package
-
-const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY; // Replace with your actual API key
+import { sendMessage, Task, Subtask } from './src/aiConfig';
 
 const Stack = createStackNavigator();
 
-const ChatScreen = ({ navigation }) => {
+const ChatScreen = ({ navigation }: { navigation: any }) => {
   const [message, setMessage] = useState('');
   const [isLoading, setIsLoading] = useState(false);
 
@@ -35,41 +26,20 @@ const ChatScreen = ({ navigation }) => {
 
     setIsLoading(true);
     try {
-      const response = await axios.post(
-        'https://api.anthropic.com/v1/messages',
-        {
-          model: "claude-3-opus-20240229",
-          max_tokens: 1000,
-          messages: [{ role: "user", content: message }]
-        },
-        {
-          headers: {
-            'x-api-key': ANTHROPIC_API_KEY,
-            'anthropic-version': '2023-06-01',
-            'Content-Type': 'application/json',
-          },
-        }
-      );
-
-      const aiResponse = response.data.content[0].text;
-      const steps = parseResponseIntoSteps(aiResponse);
-      navigation.navigate('TodoList', { steps, topic: message });
+      const tasks = await sendMessage(message);
+      console.log('Received tasks in ChatScreen:', JSON.stringify(tasks, null, 2));
+      if (tasks.length > 0) {
+        navigation.navigate('TodoList', { tasks: tasks, topic: message });
+      } else {
+        console.log('No tasks received from AI');
+        Alert.alert('Error', 'No tasks were generated. Please try a different question.');
+      }
     } catch (error) {
-      console.error('Error calling Anthropic API:', error);
+      console.error('Error getting AI response:', error);
       Alert.alert('Error', 'Failed to get a response from the AI. Please try again.');
     } finally {
       setIsLoading(false);
     }
-  };
-
-  const parseResponseIntoSteps = (response) => {
-    // This is a simple parser. You might need to adjust it based on the AI's output format.
-    const lines = response.split('\n');
-    return lines.map((line, index) => ({
-      id: (index + 1).toString(),
-      text: line.replace(/^\d+\.\s*/, '').trim(),
-      completed: false,
-    })).filter(step => step.text);
   };
 
   return (
@@ -99,62 +69,93 @@ const ChatScreen = ({ navigation }) => {
   );
 };
 
-const TodoListScreen = ({ route }) => {
-  const [todos, setTodos] = useState(route.params.steps);
-  const [newTask, setNewTask] = useState('');
-  const topic = route.params.topic;
+const TodoListScreen = ({ route }: { route: any }) => {
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [expandedTasks, setExpandedTasks] = useState<string[]>([]);
+  const topic = route.params?.topic || 'Unknown Topic';
 
-  const toggleTodo = (id) => {
-    setTodos(todos.map(todo => 
-      todo.id === id ? { ...todo, completed: !todo.completed } : todo
+  useEffect(() => {
+    console.log('Route params:', JSON.stringify(route.params, null, 2));
+    if (route.params?.tasks && Array.isArray(route.params.tasks)) {
+      console.log('Setting tasks:', JSON.stringify(route.params.tasks, null, 2));
+      setTasks(route.params.tasks);
+    } else {
+      console.log('No tasks received or tasks are not in the expected format');
+    }
+  }, [route.params]);
+
+  const toggleTask = (taskId: string) => {
+    setExpandedTasks(prev => 
+      prev.includes(taskId) 
+        ? prev.filter(id => id !== taskId)
+        : [...prev, taskId]
+    );
+  };
+
+  const toggleSubtask = (taskId: string, subtaskId: string) => {
+    setTasks(tasks.map(task => 
+      task.id === taskId
+        ? {
+            ...task,
+            subtasks: task.subtasks.map(subtask =>
+              subtask.id === subtaskId
+                ? { ...subtask, completed: !subtask.completed }
+                : subtask
+            ),
+          }
+        : task
     ));
   };
 
-  const addTask = () => {
-    if (newTask.trim()) {
-      setTodos([...todos, { id: Date.now().toString(), text: newTask.trim(), completed: false }]);
-      setNewTask('');
-    }
-  };
+  const renderSubtask = ({ item, taskId }: { item: Subtask; taskId: string }) => (
+    <TouchableOpacity onPress={() => toggleSubtask(taskId, item.id)} style={styles.subtaskItem}>
+      <View style={[styles.checkbox, item.completed && styles.checked]} />
+      <Text style={[styles.subtaskText, item.completed && styles.completedText]}>
+        {item.text}
+      </Text>
+    </TouchableOpacity>
+  );
+
+  const renderTask = ({ item }: { item: Task }) => (
+    <View style={styles.taskItem}>
+      <TouchableOpacity onPress={() => toggleTask(item.id)} style={styles.taskHeader}>
+        <Text style={styles.taskText}>{item.text}</Text>
+        <Text>{expandedTasks.includes(item.id) ? '▲' : '▼'}</Text>
+      </TouchableOpacity>
+      {expandedTasks.includes(item.id) && (
+        <>
+          <FlatList
+            data={item.subtasks}
+            renderItem={({ item: subtask }) => renderSubtask({ item: subtask, taskId: item.id })}
+            keyExtractor={(subtask) => subtask.id}
+          />
+          {item.media && (
+            <Text style={styles.mediaText}>{item.media}</Text>
+          )}
+        </>
+      )}
+    </View>
+  );
 
   return (
     <SafeAreaView style={styles.container}>
       <StatusBar barStyle="light-content" />
       <View style={styles.header}>
-        <Text style={styles.title}>{`How to ${topic}`}</Text>
+        <Text style={styles.title}>{topic}</Text>
       </View>
-      <FlatList
-        data={todos}
-        renderItem={({ item }) => (
-          <TodoItem item={item} onToggle={toggleTodo} />
-        )}
-        keyExtractor={item => item.id}
-        style={styles.list}
-      />
-      <View style={styles.addTaskContainer}>
-        <TextInput
-          style={styles.addTaskInput}
-          value={newTask}
-          onChangeText={setNewTask}
-          placeholder="Add a new task"
-          placeholderTextColor="#9E9E9E"
+      {tasks.length > 0 ? (
+        <FlatList
+          data={tasks}
+          renderItem={renderTask}
+          keyExtractor={(item) => item.id}
+          style={styles.list}
         />
-        <TouchableOpacity style={styles.addTaskButton} onPress={addTask}>
-          <Text style={styles.addTaskButtonText}>Add</Text>
-        </TouchableOpacity>
-      </View>
+      ) : (
+        <Text style={styles.noTasksText}>No tasks available</Text>
+      )}
     </SafeAreaView>
   );
 };
-
-const TodoItem = ({ item, onToggle }) => (
-  <TouchableOpacity onPress={() => onToggle(item.id)} style={styles.todoItem}>
-    <View style={[styles.checkbox, item.completed && styles.checked]} />
-    <Text style={[styles.todoText, item.completed && styles.completedTodoText]}>
-      {item.text}
-    </Text>
-  </TouchableOpacity>
-);
 
 const App = () => {
   return (
@@ -173,7 +174,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#F5F5F5',
   },
   header: {
-    backgroundColor: '#4169E1', // Changed from '#4A90E2' to royal blue
+    backgroundColor: '#4169E1',
     paddingTop: Platform.OS === 'android' ? StatusBar.currentHeight : 0,
     paddingBottom: 15,
     paddingHorizontal: 20,
@@ -205,7 +206,7 @@ const styles = StyleSheet.create({
     elevation: 2,
   },
   sendButton: {
-    backgroundColor: '#4169E1', // Changed from '#4A90E2' to royal blue
+    backgroundColor: '#4169E1',
     borderRadius: 10,
     padding: 15,
     alignItems: 'center',
@@ -220,73 +221,69 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: 'bold',
   },
-  list: {
-    marginTop: 10,
-    paddingHorizontal: 20,
+  disabledButton: {
+    backgroundColor: '#A9A9A9',
   },
-  todoItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
+  list: {
+    flex: 1,
+    padding: 20,
+  },
+  taskItem: {
     backgroundColor: 'white',
     borderRadius: 10,
-    marginBottom: 10,
-    paddingVertical: 15,
-    paddingHorizontal: 20,
+    padding: 15,
+    marginBottom: 15,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 1 },
     shadowOpacity: 0.1,
     shadowRadius: 1,
     elevation: 1,
   },
+  taskHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  taskText: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    flex: 1,
+    marginRight: 10,
+  },
+  subtaskItem: {
+    marginLeft: 20,
+    marginTop: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  subtaskText: {
+    fontSize: 16,
+    flex: 1,
+  },
+  completedText: {
+    textDecorationLine: 'line-through',
+    color: 'gray',
+  },
   checkbox: {
-    width: 24,
-    height: 24,
-    borderRadius: 12,
+    width: 20,
+    height: 20,
+    borderRadius: 4,
     borderWidth: 2,
-    borderColor: '#4169E1', // Changed from '#4A90E2' to royal blue
+    borderColor: '#4169E1',
     marginRight: 10,
   },
   checked: {
-    backgroundColor: '#4169E1', // Changed from '#4A90E2' to royal blue
+    backgroundColor: '#4169E1',
   },
-  todoText: {
-    flex: 1,
-    fontSize: 16,
-    color: '#212121',
+  noTasksText: {
+    fontSize: 18,
+    textAlign: 'center',
+    marginTop: 20,
   },
-  completedTodoText: {
-    textDecorationLine: 'line-through',
-    color: '#9E9E9E',
-  },
-  addTaskContainer: {
-    flexDirection: 'row',
-    padding: 20,
-    backgroundColor: 'white',
-    borderTopWidth: 1,
-    borderTopColor: '#E0E0E0',
-  },
-  addTaskInput: {
-    flex: 1,
-    backgroundColor: '#F5F5F5',
-    borderRadius: 10,
-    padding: 10,
-    marginRight: 10,
-    fontSize: 16,
-  },
-  addTaskButton: {
-    backgroundColor: '#4169E1', // Changed from '#4A90E2' to royal blue
-    borderRadius: 10,
-    padding: 10,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  addTaskButtonText: {
-    color: 'white',
-    fontSize: 16,
-    fontWeight: 'bold',
-  },
-  disabledButton: {
-    backgroundColor: '#A9A9A9',
+  mediaText: {
+    fontStyle: 'italic',
+    marginTop: 10,
+    color: '#666',
   },
 });
 
